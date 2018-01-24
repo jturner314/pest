@@ -87,6 +87,21 @@ pub fn generate(name: Ident, rules: Vec<Rule>, defaults: Vec<Ident>) -> Tokens {
             }
         }
     );
+    predefined.insert(
+        "drop",
+        quote! {
+            #[inline]
+            fn drop<'i>(
+                pos: ::pest::Position<'i>,
+                state: &mut ::pest::ParserState<'i, Rule>
+            ) -> ::std::result::Result<::pest::Position<'i>, ::pest::Position<'i>> {
+                match state.stack.pop() {
+                    Some(_) => Ok(pos),
+                    None => Err(pos),
+                }
+            }
+        }
+    );
 
     let rule_enum = generate_enum(&rules);
     let patterns = generate_patterns(&rules);

@@ -181,6 +181,7 @@
 //! * `soi` - (start-of-input) matches only when a `Parser` is still at the starting position
 //! * `eoi` - (end-of-input) matches only when a `Parser` has reached its end
 //! * `pop` - pops a string from the stack and matches it
+//! * `drop` - drops the top of the stack (fails to match if the stack is empty)
 //! * `peek` - peeks a string from the stack and matches it
 //!
 //! `whitespace` and `comment` should be defined manually if needed. All other rules cannot be
@@ -207,7 +208,7 @@
 //! a = { b ~ whitespace* ~ (comment ~ whitespace*)* ~ c }
 //! ```
 //!
-//! ## `push`, `pop`, and `peek`
+//! ## `push`, `pop`, `drop`, and `peek`
 //!
 //! `push(e)` simply pushes the captured string of the expression `e` down a stack. This stack can
 //! then later be used to match grammar based on its content with `pop` and `peek`.
@@ -225,9 +226,15 @@
 //! a = { "a" }
 //! ```
 //!
+//! It **panics** if the stack is empty.
+//!
 //! `pop` works the same way with the exception that it pops the string off of the stack if the
 //! the match worked. With the stack from above, if `pop` matches `"a"`, the stack will be mutated
-//! to `["b"]`.
+//! to `["b"]`. **Panics** if the stack is empty.
+//!
+//! `drop` makes it possible to remove the string at the top of the stack
+//! without matching it. If the stack is nonempty, `drop` drops the top of the
+//! stack. If the stack is empty, then `drop` fails to match.
 //!
 //! ## `Rule`
 //!
