@@ -243,9 +243,28 @@ fn generate_rule(rule: Rule) -> Tokens {
     }
 }
 
+/// Generates code that saves the stack before evaluating `expr`, and then if
+/// `expr` evaluates to `Err(_)` restores the stack.
+fn restore_stack_on_err(expr: Tokens) -> Tokens {
+    quote! {
+        {
+            let saved_stack = state.stack.clone();
+            (#expr).map_err(|pos| {
+                state.stack = saved_stack;
+                pos
+            })
+        }
+    }
+}
+
 fn generate_skip(rules: &Vec<Rule>) -> Tokens {
     let whitespace = rules.iter().any(|rule| rule.name.as_ref() == "whitespace");
     let comment = rules.iter().any(|rule| rule.name.as_ref() == "comment");
+
+    // Generate expressions that can safely be used with `pos.repeat()`.
+    // (They restore the stack when they evaluate to `Err(_)`.)
+    let whitespace_expr = restore_stack_on_err(quote! { whitespace(pos, state) });
+    let comment_expr = restore_stack_on_err(quote! { comment(pos, state) });
 
     match (whitespace, comment) {
         (false, false) => quote! {
@@ -267,7 +286,7 @@ fn generate_skip(rules: &Vec<Rule>) -> Tokens {
             ) -> ::std::result::Result<::pest::Position<'i>, ::pest::Position<'i>> {
                 if state.atomicity == ::pest::Atomicity::NonAtomic {
                     pos.repeat(#[inline(always)] |pos| {
-                        whitespace(pos, state)
+                        #whitespace_expr
                     })
                 } else {
                     Ok(pos)
@@ -283,7 +302,7 @@ fn generate_skip(rules: &Vec<Rule>) -> Tokens {
             ) -> ::std::result::Result<::pest::Position<'i>, ::pest::Position<'i>> {
                 if state.atomicity == ::pest::Atomicity::NonAtomic {
                     pos.repeat(#[inline(always)] |pos| {
-                        comment(pos, state)
+                        #comment_expr
                     })
                 } else {
                     Ok(pos)
@@ -301,14 +320,14 @@ fn generate_skip(rules: &Vec<Rule>) -> Tokens {
                     state.sequence(#[inline(always)] move |state| {
                         pos.sequence(#[inline(always)] |pos| {
                             pos.repeat(#[inline(always)] |pos| {
-                                whitespace(pos, state)
+                                #whitespace_expr
                             }).and_then(#[inline(always)] |pos| {
                                 pos.repeat(#[inline(always)] |pos| {
                                     state.sequence(#[inline(always)] move |state| {
                                         pos.sequence(#[inline(always)] |pos| {
-                                            comment(pos, state).and_then(|pos| {
+                                            (#comment_expr).and_then(|pos| {
                                                 pos.repeat(#[inline(always)] |pos| {
-                                                    whitespace(pos, state)
+                                                    #whitespace_expr
                                                 })
                                             })
                                         })
@@ -325,7 +344,18 @@ fn generate_skip(rules: &Vec<Rule>) -> Tokens {
     }
 }
 
+/// Generates a parser for a non-atomic expression.
+///
+/// When the generated expression is evaluated in client code, it has type
+/// `Result<Position<I>, Position<I>>`.
+///
+/// If the result is `Ok(_)`, then the stack is correct. If the result is
+/// `Err(_)`, the stack might still have been modified even though the
+/// expression didn't match.
 fn generate_expr(expr: Expr) -> Tokens {
+    // In the implementation, it's necessary to call `restore_stack_on_err()`
+    // on a subexpression if the subexpression can evaluate to `Err(_)` while
+    // the overall expression evaluates to `Ok(_)`.
     match expr {
         Expr::Str(string) => {
             let mut tokens = quote! {
@@ -377,7 +407,7 @@ fn generate_expr(expr: Expr) -> Tokens {
             }
         }
         Expr::NegPred(expr) => {
-            let expr = generate_expr(*expr);
+            let expr = restore_stack_on_err(generate_expr(*expr));
 
             quote! {
                 state.lookahead(false, #[inline(always)] move |state| {
@@ -414,12 +444,12 @@ fn generate_expr(expr: Expr) -> Tokens {
             }
         }
         Expr::Choice(lhs, rhs) => {
-            let head = generate_expr(*lhs);
+            let head = restore_stack_on_err(generate_expr(*lhs));
             let mut tail = vec![];
             let mut current = *rhs;
 
             while let Expr::Choice(lhs, rhs) = current {
-                tail.push(generate_expr(*lhs));
+                tail.push(restore_stack_on_err(generate_expr(*lhs)));
                 current = *rhs;
             }
             tail.push(generate_expr(current));
@@ -434,7 +464,7 @@ fn generate_expr(expr: Expr) -> Tokens {
             }
         }
         Expr::Opt(expr) => {
-            let expr = generate_expr(*expr);
+            let expr = restore_stack_on_err(generate_expr(*expr));
 
             quote! {
                 pos.optional(#[inline(always)] |pos| {
@@ -443,7 +473,7 @@ fn generate_expr(expr: Expr) -> Tokens {
             }
         }
         Expr::Rep(expr) => {
-            let expr = generate_expr(*expr);
+            let expr = restore_stack_on_err(generate_expr(*expr));
 
             quote! {
                 state.sequence(#[inline(always)] move |state| {
@@ -486,7 +516,18 @@ fn generate_expr(expr: Expr) -> Tokens {
     }
 }
 
+/// Generates a parser for an atomic expression.
+///
+/// When the generated expression is evaluated in client code, it has type
+/// `Result<Position<I>, Position<I>>`.
+///
+/// If the result is `Ok(_)`, then the stack is correct. If the result is
+/// `Err(_)`, the stack might still have been modified even though the
+/// expression didn't match.
 fn generate_expr_atomic(expr: Expr) -> Tokens {
+    // In the implementation, it's necessary to call `restore_stack_on_err()`
+    // on a subexpression if the subexpression can evaluate to `Err(_)` while
+    // the overall expression evaluates to `Ok(_)`.
     match expr {
         Expr::Str(string) => {
             let mut tokens = quote! {
@@ -538,7 +579,7 @@ fn generate_expr_atomic(expr: Expr) -> Tokens {
             }
         }
         Expr::NegPred(expr) => {
-            let expr = generate_expr_atomic(*expr);
+            let expr = restore_stack_on_err(generate_expr_atomic(*expr));
 
             quote! {
                 state.lookahead(false, #[inline(always)] move |state| {
@@ -573,12 +614,12 @@ fn generate_expr_atomic(expr: Expr) -> Tokens {
             }
         }
         Expr::Choice(lhs, rhs) => {
-            let head = generate_expr_atomic(*lhs);
+            let head = restore_stack_on_err(generate_expr_atomic(*lhs));
             let mut tail = vec![];
             let mut current = *rhs;
 
             while let Expr::Choice(lhs, rhs) = current {
-                tail.push(generate_expr_atomic(*lhs));
+                tail.push(restore_stack_on_err(generate_expr_atomic(*lhs)));
                 current = *rhs;
             }
             tail.push(generate_expr_atomic(current));
@@ -593,7 +634,7 @@ fn generate_expr_atomic(expr: Expr) -> Tokens {
             }
         }
         Expr::Opt(expr) => {
-            let expr = generate_expr_atomic(*expr);
+            let expr = restore_stack_on_err(generate_expr_atomic(*expr));
 
             quote! {
                 pos.optional(#[inline(always)] |pos| {
@@ -602,7 +643,7 @@ fn generate_expr_atomic(expr: Expr) -> Tokens {
             }
         }
         Expr::Rep(expr) => {
-            let expr = generate_expr_atomic(*expr);
+            let expr = restore_stack_on_err(generate_expr_atomic(*expr));
 
             quote! {
                 pos.repeat(#[inline(always)] |pos| {
@@ -741,11 +782,25 @@ mod tests {
         assert_eq!(
             generate_expr(expr),
             quote! {
-                pos.match_string("a").or_else(#[inline(always)] |pos| {
-                    pos.match_string("b")
-                }).or_else(#[inline(always)] |pos| {
-                    pos.match_string("c")
-                }).or_else(#[inline(always)] |pos| {
+                {
+                    let saved_stack = state.stack.clone();
+                    (pos.match_string("a")).map_err(|pos| {
+                        state.stack = saved_stack;
+                        pos
+                    })
+                }.or_else(#[inline(always)] |pos| {{
+                    let saved_stack = state.stack.clone();
+                    (pos.match_string("b")).map_err(|pos| {
+                        state.stack = saved_stack;
+                        pos
+                    })
+                }}).or_else(#[inline(always)] |pos| {{
+                    let saved_stack = state.stack.clone();
+                    (pos.match_string("c")).map_err(|pos| {
+                        state.stack = saved_stack;
+                        pos
+                    })
+                }}).or_else(#[inline(always)] |pos| {
                     pos.match_string("d")
                 })
             }
@@ -768,11 +823,25 @@ mod tests {
         assert_eq!(
             generate_expr_atomic(expr),
             quote! {
-                pos.match_string("a").or_else(#[inline(always)] |pos| {
-                    pos.match_string("b")
-                }).or_else(#[inline(always)] |pos| {
-                    pos.match_string("c")
-                }).or_else(#[inline(always)] |pos| {
+                {
+                    let saved_stack = state.stack.clone();
+                    (pos.match_string("a")).map_err(|pos| {
+                        state.stack = saved_stack;
+                        pos
+                    })
+                }.or_else(#[inline(always)] |pos| {{
+                    let saved_stack = state.stack.clone();
+                    (pos.match_string("b")).map_err(|pos| {
+                        state.stack = saved_stack;
+                        pos
+                    })
+                }}).or_else(#[inline(always)] |pos| {{
+                    let saved_stack = state.stack.clone();
+                    (pos.match_string("c")).map_err(|pos| {
+                        state.stack = saved_stack;
+                        pos
+                    })
+                }}).or_else(#[inline(always)] |pos| {
                     pos.match_string("d")
                 })
             }
