@@ -81,7 +81,7 @@ impl<T: Copy + Debug + Eq + Hash + Ord> RuleType for T {}
 
 pub use error::Error;
 pub use parser::Parser;
-pub use parser_state::{state, Atomicity, Lookahead, ParserState};
+pub use parser_state::{state, Atomicity, Lookahead, ParserState, Stack};
 pub use position::Position;
 pub use span::Span;
 pub use token::Token;

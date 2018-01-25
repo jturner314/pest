@@ -15,6 +15,59 @@ use iterators::{pairs, QueueableToken};
 use position::{self, Position};
 use span::Span;
 
+/// A simple stack.
+///
+/// The stack is implemented as a singly linked list with reference-counted
+/// nodes. Clones and modifications to the top of the stack are cheap.
+/// Iterating through the stack is relatively expensive because that requires
+/// following all of the links.
+#[derive(Clone, Debug)]
+pub struct Stack<T> {
+    head: Option<Rc<Node<T>>>,
+}
+
+#[derive(Clone, Debug)]
+struct Node<T> {
+    elem: T,
+    next: Option<Rc<Node<T>>>,
+}
+
+impl<T> Stack<T> {
+    /// Creates a new, empty stack.
+    pub fn new() -> Self {
+        Stack { head: None }
+    }
+
+    /// Returns `true` if the stack contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.head.is_none()
+    }
+
+    /// Returns the top of the stack, or `None` if the stack is empty.
+    pub fn peek(&self) -> Option<&T> {
+        self.head.as_ref().map(|node| &node.elem)
+    }
+
+    /// Adds an element to the top of the stack.
+    pub fn push(&mut self, elem: T) {
+        let old_head = ::std::mem::replace(&mut self.head, None);
+        self.head = Some(Rc::new(Node {
+            elem: elem,
+            next: old_head,
+        }));
+    }
+
+    /// Drops the top of the stack, returning `Err` if the stack was empty.
+    pub fn drop_top(&mut self) -> Result<(), ()> {
+        if self.head.is_some() {
+            self.head = self.head.as_ref().unwrap().next.clone();
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
 /// An `enum` specifying the current lookahead status of a `ParserState`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lookahead {
@@ -42,7 +95,7 @@ pub struct ParserState<'i, R: RuleType> {
     /// Specifies current atomicity
     pub atomicity: Atomicity,
     /// Stack of `Span`s
-    pub stack: Vec<Span<'i>>
+    pub stack: Stack<Span<'i>>
 }
 
 /// Creates a `ParserState` from a `&str`, supplying it to a closure `f`.
@@ -69,7 +122,7 @@ where
         neg_attempts: vec![],
         attempt_pos: 0,
         atomicity: Atomicity::NonAtomic,
-        stack: vec![]
+        stack: Stack::new(),
     };
 
     if f(&mut state, Position::from_start(input)).is_ok() {
@@ -356,5 +409,61 @@ impl<'i, R: RuleType> ParserState<'i, R> {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Stack;
+
+    #[test]
+    fn stack_ops() {
+        let mut stack = Stack::new();
+
+        // []
+        assert!(stack.is_empty());
+        assert_eq!(stack.peek(), None);
+        assert_eq!(stack.drop_top(), Err(()));
+
+        // [0]
+        stack.push(0);
+        assert!(!stack.is_empty());
+        assert_eq!(stack.peek(), Some(&0));
+
+        // [0, 1]
+        stack.push(1);
+        assert!(!stack.is_empty());
+        assert_eq!(stack.peek(), Some(&1));
+
+        // [0]
+        assert_eq!(stack.drop_top(), Ok(()));
+        assert!(!stack.is_empty());
+        assert_eq!(stack.peek(), Some(&0));
+
+        // [0, 2]
+        stack.push(2);
+        assert!(!stack.is_empty());
+        assert_eq!(stack.peek(), Some(&2));
+
+        // [0, 2, 3]
+        stack.push(3);
+        assert!(!stack.is_empty());
+        assert_eq!(stack.peek(), Some(&3));
+
+        // [0, 2]
+        assert_eq!(stack.drop_top(), Ok(()));
+        assert!(!stack.is_empty());
+        assert_eq!(stack.peek(), Some(&2));
+
+        // [0]
+        assert_eq!(stack.drop_top(), Ok(()));
+        assert!(!stack.is_empty());
+        assert_eq!(stack.peek(), Some(&0));
+
+        // []
+        assert_eq!(stack.drop_top(), Ok(()));
+        assert!(stack.is_empty());
+        assert_eq!(stack.peek(), None);
+        assert_eq!(stack.drop_top(), Err(()));
     }
 }
